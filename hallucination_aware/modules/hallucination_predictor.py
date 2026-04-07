@@ -179,7 +179,7 @@ class HallucinationPredictor:
 
         # Train type model (multiclass)
         self.type_model = LogisticRegression(
-            random_state=self.random_seed, max_iter=1000, multi_class="multinomial"
+            random_state=self.random_seed, max_iter=1000
         )
         self.type_model.fit(X_train, yt_train)
 

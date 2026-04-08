@@ -147,6 +147,12 @@ def main() -> None:
         help="Random seed.",
     )
     parser.add_argument(
+        "--source", type=str, nargs="+", default=None,
+        help="Path(s) to external JSONL file(s) with 'query' field to use as "
+             "input queries instead of built-in samples. Records are appended "
+             "to existing dataset. Use with TruthfulQA/FEVER converted data.",
+    )
+    parser.add_argument(
         "--config", type=str, default=None,
         help="Path to config.yaml.",
     )
@@ -160,12 +166,42 @@ def main() -> None:
     analyzer = QueryAnalyzer(config=config)
     rng = random.Random(args.seed)
 
-    queries = _generate_query_variants(_SAMPLE_QUERIES, args.n, args.seed)
+    # Load queries from external source files or generate from built-in samples
+    if args.source:
+        queries: List[str] = []
+        for source_path in args.source:
+            src = Path(source_path)
+            if not src.exists():
+                print(f"WARNING: Source file not found: {source_path}, skipping.")
+                continue
+            with open(src, "r", encoding="utf-8") as sf:
+                for line in sf:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        q = record.get("query", "")
+                        if q:
+                            queries.append(q)
+                    except json.JSONDecodeError:
+                        continue
+            print(f"Loaded {len(queries)} queries from {source_path}")
+        # Limit to --n if specified
+        if args.n and len(queries) > args.n:
+            rng_sample = random.Random(args.seed)
+            queries = rng_sample.sample(queries, args.n)
+        file_mode = "a"  # Append to existing dataset
+        print(f"Using {len(queries)} queries from external source(s) (append mode)")
+    else:
+        queries = _generate_query_variants(_SAMPLE_QUERIES, args.n, args.seed)
+        file_mode = "w"  # Overwrite when generating from scratch
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     hallucination_count = 0
-    with open(output_path, "w", encoding="utf-8") as f:
+    total_written = 0
+    with open(output_path, file_mode, encoding="utf-8") as f:
         for i, query in enumerate(queries):
             features = analyzer.analyze(query)
             is_hall, h_type = _assign_label(features, rng)
@@ -179,10 +215,11 @@ def main() -> None:
                 "hallucination_type": h_type,
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            total_written += 1
 
-    print(f"Generated {args.n} labelled examples → {output_path}")
-    print(f"  Hallucination: {hallucination_count}  |  Clean: {args.n - hallucination_count}")
-    print(f"  Hallucination rate: {hallucination_count / args.n:.1%}")
+    print(f"{'Appended' if file_mode == 'a' else 'Generated'} {total_written} labelled examples → {output_path}")
+    print(f"  Hallucination: {hallucination_count}  |  Clean: {total_written - hallucination_count}")
+    print(f"  Hallucination rate: {hallucination_count / max(total_written, 1):.1%}")
 
 
 if __name__ == "__main__":

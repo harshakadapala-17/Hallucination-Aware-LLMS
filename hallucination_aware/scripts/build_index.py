@@ -70,8 +70,9 @@ def main() -> None:
     parser.add_argument(
         "--input",
         type=str,
-        default=None,
-        help="Path to the JSONL file with documents. "
+        nargs="+",
+        default=[],
+        help="Path(s) to JSONL file(s) with documents. "
              "If omitted, creates a small demo index.",
     )
     parser.add_argument(
@@ -86,8 +87,10 @@ def main() -> None:
     rag = RAGModule(config=config)
 
     if args.input:
-        print(f"Loading documents from: {args.input}")
-        documents = load_documents(args.input)
+        documents = []
+        for inp in args.input:
+            print(f"Loading documents from: {inp}")
+            documents.extend(load_documents(inp))
     else:
         print("No --input provided. Building demo index with sample documents.")
         documents = [

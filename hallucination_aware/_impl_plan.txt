@@ -1,0 +1,271 @@
+Hallucination-Aware LLM System
+Final Implementation Plan
+3-Person Sequential Execution  •  GitHub Handoff Workflow  •  ~10–13 Hours Total
+Overview
+This plan covers all remaining work to bring the system from a fully-coded-but-uninitialized state to a running, tested, and demo-ready product. All 6 core modules are implemented — what's missing is data artifacts, benchmark integration, tests, and CI/CD.
+
+Work is split into 3 strictly sequential phases. Each person completes their phase, pushes to GitHub, and the next person clones/pulls the updated repo before starting.
+
+
+GitHub Handoff Workflow
+Each person follows this exact sequence:
+
+Person 1 — First to start
+git clone <repo-url>
+# ... do all Phase 1 work ...
+git add data/ && git commit -m 'Phase 1: FAISS index, labeled data, trained models'
+git push origin main
+
+Person 2 — After Person 1 confirms push
+git clone <repo-url>   # get fresh copy with Person 1's data artifacts
+# ... do all Phase 2 work ...
+git add data/ scripts/ && git commit -m 'Phase 2: TruthfulQA/FEVER integration, benchmarks'
+git push origin main
+
+Person 3 — After Person 2 confirms push
+git clone <repo-url>   # get fresh copy with all data + benchmarks
+# ... do all Phase 3 work ...
+git add tests/ .github/ Makefile README.md && git commit -m 'Phase 3: tests, CI/CD, demo launch'
+git push origin main
+
+⚠ Add data/ to .gitignore carefully — the trained model .pkl files and FAISS index MUST be committed and pushed so the next person doesn't have to regenerate them. Only exclude raw datasets if they are very large (>100MB).
+
+Environment Setup (All Persons)
+Before starting any phase, make sure your environment is ready:
+
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+OpenAI API Key setup:
+# Create a .env file in the project root (never commit this):
+echo 'OPENAI_API_KEY=sk-...' > .env
+# The pipeline loads it automatically via os.environ
+⚠ Without the API key, the pipeline still runs but generation returns placeholder text. Person 1 is responsible for confirming the key is available before the smoke test. Share it securely (not via GitHub).
+
+
+Phase 1 — Data Foundation & Model Training
+Goal: Generate all data artifacts that the rest of the system depends on. Nothing downstream can start until this phase is complete and pushed.
+
+Tasks
+
+How to Train the Models
+The training logic is inside hallucination_predictor.py. Run these commands from a Python REPL or save as a one-off script:
+
+from modules import load_config
+from modules.hallucination_predictor import HallucinationPredictor
+
+config = load_config()
+predictor = HallucinationPredictor(config)
+
+# This loads data/labeled_dataset.jsonl, trains, evaluates, and saves both .pkl files
+metrics = predictor.train('data/labeled_dataset.jsonl')
+print(metrics)   # Should show AUROC and F1 scores
+
+ℹ If AUROC is below 0.65, re-run label_dataset.py with a higher --n (try 500) and retrain. The heuristic fallback is fine for smoke testing but benchmarks in Phase 2 need real models.
+
+Deliverables Checklist
+
+data/
+
+├── faiss_index/
+
+│   ├── index.faiss
+
+│   └── metadata.jsonl
+
+├── labeled_dataset.jsonl
+
+├── predictor.pkl
+└── type_classifier.pkl
+
+Handoff to Person 2
+All 5 artifacts above exist and are non-zero size
+python -m src.pipeline returns a valid trace dict (not an exception)
+Push includes the data/ directory — confirm with: git log --oneline -1
+Slack/message Person 2 with: OPENAI_API_KEY value (securely), any errors or deviations, and AUROC/F1 scores from training
+
+Estimated time: 3–4 hours
+
+Phase 2 — Benchmark Integration & Evaluation
+Goal: Download and integrate TruthfulQA and FEVER benchmark datasets. Build evaluation scripts and re-train the predictor on richer data.
+⚠ Do NOT start until Person 1 confirms all 5 data artifacts are in the repo. Run git clone fresh to get their work.
+
+Tasks
+
+Converter Script Specs
+scripts/convert_truthfulqa.py
+Input: data/truthfulqa_raw.jsonl (HuggingFace format)
+Output format — each line of data/truthfulqa.jsonl:
+{ "query": "<question>", "correct_answer": "<best_answer>", "incorrect_answers": ["...", ...], "label": 0 or 1 }
+label = 1 if the question is likely to cause hallucination (use question category or incorrect_answers count as proxy).
+
+scripts/convert_fever.py
+Input: data/fever_raw.jsonl (HuggingFace format)
+Output format — each line of data/fever.jsonl:
+{ "query": "<claim>", "verdict": "SUPPORTS" | "REFUTES" | "NOT ENOUGH INFO", "evidence": "<evidence text>", "label": 0 or 1 }
+label = 1 if verdict is REFUTES (high hallucination risk).
+
+evaluate_benchmarks.py Spec
+This script should:
+Load data/truthfulqa.jsonl and data/fever.jsonl
+Run each query through the full pipeline (Pipeline.run(query))
+Compare pipeline verdict against ground-truth label
+Compute: accuracy, hallucination detection rate, false positive rate, strategy distribution
+Save results to data/benchmark_results.json in this format:
+{ "truthfulqa": { "accuracy": 0.0, "hallucination_rate": 0.0, "strategy_dist": {} },
+  "fever": { "accuracy": 0.0, "hallucination_rate": 0.0, "strategy_dist": {} } }
+
+⚠ Person 3 will write tests against this exact JSON structure. Do not change the top-level keys.
+
+Decision: FAISS Extension Strategy
+Use the --input flag approach on build_index.py (not a separate indexer). This keeps a single code path for index building and avoids Person 3 having to test two different scripts. Concrete change:
+python scripts/build_index.py --input data/truthfulqa.jsonl data/fever.jsonl
+
+Deliverables Checklist
+
+scripts/
+
+├── convert_truthfulqa.py   [NEW]
+
+├── convert_fever.py         [NEW]
+
+└── evaluate_benchmarks.py   [NEW]
+
+
+
+data/
+
+├── truthfulqa.jsonl         [NEW]
+
+├── fever.jsonl              [NEW]
+
+├── benchmark_results.json   [NEW]
+└── predictor.pkl            [UPDATED — re-trained]
+
+Handoff to Person 3
+data/truthfulqa.jsonl and data/fever.jsonl exist and are well-formed (valid JSON on each line)
+data/benchmark_results.json exists with truthfulqa and fever top-level keys
+python scripts/run_experiments.py completes without errors
+Share benchmark accuracy numbers with Person 3 so they know expected values for tests
+
+Estimated time: 4–5 hours
+
+Phase 3 — Testing, CI/CD & Demo Launch
+Goal: Validate everything works end-to-end, fill test gaps, set up CI/CD, and launch the Streamlit demo with real data.
+⚠ Do NOT start until Person 2 confirms benchmark_results.json exists and run_experiments.py passes.
+
+Tasks
+
+test_pipeline.py Spec
+File: tests/test_pipeline.py
+Tests to include:
+test_trace_has_required_keys — verify all 7 keys present in output
+test_strategy_is_valid_value — strategy is one of direct_llm | rag | rag_verification
+test_low_risk_query_uses_direct_llm — simple factual query routes correctly
+test_high_risk_query_uses_rag_verification — complex multi-entity query routes correctly
+test_verification_present_for_rag_verification — verification dict not None when strategy is rag_verification
+test_verification_absent_for_direct_llm — verification is None when strategy is direct_llm
+test_features_dict_has_all_keys — all 8 expected feature keys present
+test_prediction_risk_score_in_range — risk_score between 0.0 and 1.0
+
+test_benchmark_evaluation.py Spec
+File: tests/test_benchmark_evaluation.py
+Tests to include:
+test_truthfulqa_jsonl_is_valid — load and validate schema of each record
+test_fever_jsonl_is_valid — load and validate schema of each record
+test_benchmark_results_has_expected_keys — top-level keys truthfulqa and fever present
+test_benchmark_accuracy_in_range — accuracy values between 0 and 1
+test_converter_output_format — run converter on 5 sample records and check output structure
+
+ci.yml Spec
+File: .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.10' }
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -v
+      - run: pip install ruff && ruff check src/ modules/ scripts/ --ignore E501
+
+ℹ Use ruff (not flake8) — it's faster and requires no extra config file. The --ignore E501 flag skips line-length warnings so you don't spend time reformatting existing code.
+
+Makefile Spec
+test:
+    python -m pytest tests/ -v
+
+lint:
+    ruff check src/ modules/ scripts/ --ignore E501
+
+demo:
+    streamlit run demo/app.py
+
+train:
+    python scripts/label_dataset.py --n 200
+    python -c "from modules import load_config; from modules.hallucination_predictor import HallucinationPredictor; p = HallucinationPredictor(load_config()); print(p.train('data/labeled_dataset.jsonl'))"
+
+index:
+    python scripts/build_index.py
+
+Demo Failure Fallback
+If the Streamlit demo fails due to a missing OpenAI API key:
+Confirm .env file is in project root with a valid key
+The demo will still load and show all tabs — generation tab will display placeholder text
+This is acceptable for demo purposes; note it in README.md
+
+New Files Created
+
+tests/
+
+├── __init__.py              [NEW]
+
+├── test_pipeline.py         [NEW]
+
+└── test_benchmark_evaluation.py [NEW]
+
+
+
+.github/
+
+└── workflows/
+
+    └── ci.yml               [NEW]
+
+
+Makefile                     [NEW]
+
+Estimated time: 3–4 hours
+
+Resolved Decisions
+
+
+Quick Reference — All Commands
+
+Phase 1
+pip install -r requirements.txt
+python scripts/build_index.py
+python scripts/label_dataset.py --n 200
+# Then run training via Python (see Phase 1 section)
+python -m src.pipeline   # smoke test
+
+Phase 2
+pip install datasets
+# Download TruthfulQA and FEVER (see Phase 2 section)
+python scripts/convert_truthfulqa.py
+python scripts/convert_fever.py
+python scripts/build_index.py --input data/truthfulqa.jsonl data/fever.jsonl
+python scripts/label_dataset.py --n 200 --source data/truthfulqa.jsonl
+# Retrain predictor (see Phase 1 training commands)
+python scripts/evaluate_benchmarks.py
+python scripts/run_experiments.py
+
+Phase 3
+touch tests/__init__.py
+python -m pytest tests/ -v
+pip install ruff && ruff check src/ modules/ scripts/ --ignore E501
+streamlit run demo/app.py

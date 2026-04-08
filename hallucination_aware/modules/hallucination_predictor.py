@@ -179,7 +179,7 @@ class HallucinationPredictor:
 
         # Train type model (multiclass)
         self.type_model = LogisticRegression(
-            random_state=self.random_seed, max_iter=1000, multi_class="multinomial"
+            random_state=self.random_seed, max_iter=1000
         )
         self.type_model.fit(X_train, yt_train)
 
@@ -235,14 +235,19 @@ class HallucinationPredictor:
         complexity = float(features.get("complexity_score", 0.0))
         risk_score = complexity  # direct proxy
 
-        # Heuristic type assignment
-        if features.get("contains_citation_pattern", False):
+        # Heuristic type assignment (priority order)
+        entity_count = features.get("entity_count", 0)
+        contains_citation = features.get("contains_citation_pattern", False)
+        contains_date = features.get("contains_date", False)
+        multi_hop = features.get("multi_hop_indicator", False)
+        
+        if contains_citation:
             h_type = "citation"
-        elif features.get("contains_date", False):
+        elif contains_date:
             h_type = "temporal"
-        elif features.get("multi_hop_indicator", False):
+        elif multi_hop:
             h_type = "reasoning"
-        elif features.get("entity_count", 0) >= 2:
+        elif entity_count >= 2:
             h_type = "entity"
         else:
             h_type = "none"

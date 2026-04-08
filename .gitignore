@@ -2,6 +2,14 @@
 .venv/
 venv/
 env/
+venv311/
+
+# Data — keep trained artifacts, exclude only very large raw files
+# IMPORTANT: predictor.pkl, type_classifier.pkl, faiss_index/, labeled_dataset.jsonl MUST be committed
+!data/faiss_index/
+!data/faiss_index/**
+!data/*.pkl
+!data/*.jsonl
 
 # Python
 __pycache__/

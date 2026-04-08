@@ -1,0 +1,98 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-8.2.0, pluggy-1.6.0 -- C:\Users\Hp\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: D:\Genai\hallucination_aware
+plugins: anyio-4.4.0, hypothesis-6.146.0, locust-2.43.1, cov-4.1.0
+collecting ... collected 62 items
+
+tests/test_generation_module.py::TestHappyPath::test_direct_llm PASSED   [  1%]
+tests/test_generation_module.py::TestHappyPath::test_rag_with_context PASSED [  3%]
+tests/test_generation_module.py::TestHappyPath::test_rag_verification PASSED [  4%]
+tests/test_generation_module.py::TestHappyPath::test_rag_without_context PASSED [  6%]
+tests/test_generation_module.py::TestEdgeCases::test_empty_query PASSED  [  8%]
+tests/test_generation_module.py::TestEdgeCases::test_invalid_strategy_raises PASSED [  9%]
+tests/test_generation_module.py::TestEdgeCases::test_non_string_query_raises PASSED [ 11%]
+tests/test_generation_module.py::TestEdgeCases::test_prompt_tokens_increase_with_context PASSED [ 12%]
+tests/test_hallucination_predictor.py::TestHeuristicPredict::test_returns_correct_keys PASSED [ 14%]
+tests/test_hallucination_predictor.py::TestHeuristicPredict::test_risk_score_bounded PASSED [ 16%]
+tests/test_hallucination_predictor.py::TestHeuristicPredict::test_citation_type FAILED [ 17%]
+tests/test_hallucination_predictor.py::TestHeuristicPredict::test_temporal_type FAILED [ 19%]
+tests/test_hallucination_predictor.py::TestHeuristicPredict::test_reasoning_type PASSED [ 20%]
+tests/test_hallucination_predictor.py::TestHeuristicPredict::test_entity_type FAILED [ 22%]
+tests/test_hallucination_predictor.py::TestEdgeCases::test_empty_features PASSED [ 24%]
+tests/test_hallucination_predictor.py::TestEdgeCases::test_non_dict_raises PASSED [ 25%]
+tests/test_hallucination_predictor.py::TestEdgeCases::test_missing_entity_type_flags PASSED [ 27%]
+tests/test_hallucination_predictor.py::TestTraining::test_train_returns_metrics PASSED [ 29%]
+tests/test_hallucination_predictor.py::TestTraining::test_train_file_not_found PASSED [ 30%]
+tests/test_hallucination_predictor.py::TestTraining::test_train_too_few_samples PASSED [ 32%]
+tests/test_query_analyzer.py::TestHappyPath::test_simple_factoid PASSED  [ 33%]
+tests/test_query_analyzer.py::TestHappyPath::test_complex_multi_hop PASSED [ 35%]
+tests/test_query_analyzer.py::TestEdgeCases::test_empty_string PASSED    [ 37%]
+tests/test_query_analyzer.py::TestEdgeCases::test_single_word PASSED     [ 38%]
+tests/test_query_analyzer.py::TestEdgeCases::test_non_string_raises_type_error PASSED [ 40%]
+tests/test_query_analyzer.py::TestEntityTypeFlags::test_person_detected PASSED [ 41%]
+tests/test_query_analyzer.py::TestEntityTypeFlags::test_org_detected PASSED [ 43%]
+tests/test_query_analyzer.py::TestEntityTypeFlags::test_loc_detected PASSED [ 45%]
+tests/test_query_analyzer.py::TestEntityTypeFlags::test_date_flag_matches_contains_date PASSED [ 46%]
+tests/test_query_analyzer.py::TestComplexityBounds::test_very_long_query PASSED [ 48%]
+tests/test_query_analyzer.py::TestComplexityBounds::test_all_caps_query PASSED [ 50%]
+tests/test_rag_module.py::TestHappyPath::test_no_index_returns_empty PASSED [ 51%]
+tests/test_rag_module.py::TestHappyPath::test_build_and_retrieve PASSED  [ 53%]
+tests/test_rag_module.py::TestHappyPath::test_top_k_limits_results PASSED [ 54%]
+tests/test_rag_module.py::TestEdgeCases::test_non_string_query_raises PASSED [ 56%]
+tests/test_rag_module.py::TestEdgeCases::test_empty_documents_raises PASSED [ 58%]
+tests/test_rag_module.py::TestEdgeCases::test_index_persists_to_disk PASSED [ 59%]
+tests/test_rag_module.py::TestChunking::test_short_doc_not_chunked PASSED [ 61%]
+tests/test_rag_module.py::TestChunking::test_long_doc_chunked PASSED     [ 62%]
+tests/test_strategy_selector.py::TestRouting::test_low_risk_direct_llm PASSED [ 64%]
+tests/test_strategy_selector.py::TestRouting::test_medium_risk_rag PASSED [ 66%]
+tests/test_strategy_selector.py::TestRouting::test_high_risk_rag_verification PASSED [ 67%]
+tests/test_strategy_selector.py::TestRouting::test_high_risk_type_overrides PASSED [ 69%]
+tests/test_strategy_selector.py::TestRouting::test_all_high_risk_types PASSED [ 70%]
+tests/test_strategy_selector.py::TestBoundaries::test_exactly_low_threshold PASSED [ 72%]
+tests/test_strategy_selector.py::TestBoundaries::test_exactly_high_threshold PASSED [ 74%]
+tests/test_strategy_selector.py::TestBoundaries::test_zero_risk PASSED   [ 75%]
+tests/test_strategy_selector.py::TestBoundaries::test_max_risk PASSED    [ 77%]
+tests/test_strategy_selector.py::TestEdgeCases::test_missing_risk_score_raises PASSED [ 79%]
+tests/test_strategy_selector.py::TestEdgeCases::test_non_dict_raises PASSED [ 80%]
+tests/test_strategy_selector.py::TestEdgeCases::test_missing_type_defaults_to_none PASSED [ 82%]
+tests/test_strategy_selector.py::TestEdgeCases::test_result_always_valid_strategy PASSED [ 83%]
+tests/test_verification_module.py::TestHappyPath::test_supported_answer PASSED [ 85%]
+tests/test_verification_module.py::TestHappyPath::test_claim_entries_have_required_keys PASSED [ 87%]
+tests/test_verification_module.py::TestEdgeCases::test_no_evidence PASSED [ 88%]
+tests/test_verification_module.py::TestEdgeCases::test_empty_answer PASSED [ 90%]
+tests/test_verification_module.py::TestEdgeCases::test_short_answer PASSED [ 91%]
+tests/test_verification_module.py::TestEdgeCases::test_non_string_answer_raises PASSED [ 93%]
+tests/test_verification_module.py::TestEdgeCases::test_non_list_evidence_raises PASSED [ 95%]
+tests/test_verification_module.py::TestClaimExtraction::test_multi_sentence PASSED [ 96%]
+tests/test_verification_module.py::TestClaimExtraction::test_max_claims_limit PASSED [ 98%]
+tests/test_verification_module.py::TestClaimExtraction::test_empty_sentences_filtered PASSED [100%]
+
+================================== FAILURES ===================================
+___________________ TestHeuristicPredict.test_citation_type ___________________
+tests\test_hallucination_predictor.py:97: in test_citation_type
+    assert result["hallucination_type"] == "citation"
+E   AssertionError: assert 'none' == 'citation'
+E     
+E     - citation
+E     + none
+___________________ TestHeuristicPredict.test_temporal_type ___________________
+tests\test_hallucination_predictor.py:101: in test_temporal_type
+    assert result["hallucination_type"] == "temporal"
+E   AssertionError: assert 'none' == 'temporal'
+E     
+E     - temporal
+E     + none
+____________________ TestHeuristicPredict.test_entity_type ____________________
+tests\test_hallucination_predictor.py:113: in test_entity_type
+    assert result["hallucination_type"] == "entity"
+E   AssertionError: assert 'relation' == 'entity'
+E     
+E     - entity
+E     + relation
+=========================== short test summary info ===========================
+FAILED tests/test_hallucination_predictor.py::TestHeuristicPredict::test_citation_type
+FAILED tests/test_hallucination_predictor.py::TestHeuristicPredict::test_temporal_type
+FAILED tests/test_hallucination_predictor.py::TestHeuristicPredict::test_entity_type
+======================== 3 failed, 59 passed in 37.70s ========================

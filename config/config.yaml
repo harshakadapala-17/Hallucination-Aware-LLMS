@@ -1,5 +1,5 @@
 model:
-  provider: "ollama"              # "openai" or "ollama"
+  provider: "ollama"              # "ollama" (local, free) — no API key needed
   name: "llama3.2"               # lightweight model (~2GB), good speed/quality balance
   temperature: 0.0
   max_tokens: 256
@@ -7,8 +7,8 @@ model:
 
 strategy:
   thresholds:
-    low: 0.35   # calibrated from labeled data (was 0.3)
-    high: 0.70
+    low: 0.20   # lowered: model underestimates risk, push more queries to RAG
+    high: 0.50  # lowered: reach rag_verification sooner
   high_risk_types:
     - "citation"
     - "entity"
@@ -22,7 +22,23 @@ rag:
   chunk_overlap: 50
   index_path: "data/faiss_index"
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
-  use_hyde: false   # set to true when using OpenAI (requires API key for query expansion)
+  use_hyde: false                 # HyDE via Ollama — set true to enable
+
+  # ── Advanced Retrieval ────────────────────────────────────────────────
+  use_reranking: true             # cross-encoder re-ranking after retrieval
+  reranking_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+  use_query_decomposition: true   # decompose complex queries into sub-questions
+  use_contextual_compression: true  # extract only relevant sentences per doc
+  compression_threshold: 0.4     # cosine-sim threshold for sentence selection
+
+  use_adaptive_topk: true         # vary top_k by query complexity
+  adaptive_topk:
+    low: 2                        # complexity < 0.3
+    medium: 3                     # complexity 0.3 – 0.7
+    high: 5                       # complexity > 0.7
+
+  min_retrieval_confidence: 0.3   # fall back to direct_llm when below this
 
 predictor:
   model_type: "logistic_regression"   # or "xgboost"
@@ -31,9 +47,16 @@ predictor:
   test_size: 0.2
   random_seed: 42
 
+  # ── Hybrid self-consistency scoring ─────────────────────────────────
+  use_self_consistency: true          # blend feature + self-consistency scores
+  self_consistency_threshold: 0.3    # only trigger when complexity > this
+  self_consistency_samples: 3        # number of Ollama samples (temperatures vary)
+  self_consistency_weight: 0.6       # weight given to inconsistency_score
+  feature_weight: 0.4                # weight given to feature-based risk_score
+
 labeling:
   entity_sim_threshold: 0.85
-  llm_judge_model: "gpt-3.5-turbo"
+  llm_judge_model: "llama3.2"
 
 verification:
   sim_threshold_supported: 0.65   # used only when use_nli_entailment: false

@@ -2,70 +2,117 @@
 
 ![CI](https://github.com/ksyeshwanth/Hallucination-Aware-LLMS/actions/workflows/ci.yml/badge.svg)
 
-A modular pipeline that **predicts hallucination risk before LLM generation** and **routes queries to the safest answering strategy**. The system analyses query complexity, predicts the likelihood and type of hallucination, and dynamically selects between direct LLM generation, retrieval-augmented generation (RAG), or RAG with post-generation verification.
-
-The architecture is fully configurable via a single `config/config.yaml` file and designed for research reproducibility. Each module is independently testable and importable, following strict interface contracts. The pipeline produces a unified trace dict that can be consumed by the Streamlit demo, batch experiments, or downstream evaluation scripts.
+A fully local, modular pipeline that **predicts hallucination risk before LLM generation** and routes each query to the safest answering strategy. The system analyses query complexity, predicts the likelihood and type of hallucination, then selects between direct LLM generation, retrieval-augmented generation (RAG), or RAG with NLI-based post-generation verification. Everything runs on **Ollama — no API key required** — making it suitable for air-gapped research environments, fact-sensitive Q&A tasks, and offline experimentation.
 
 ---
 
-## Benchmark Results
+## How It Works
 
-Evaluated on TruthfulQA (817 questions) and FEVER (2,000 claims):
+```
+QueryAnalyzer
+    → HallucinationPredictor  (hybrid self-consistency scoring)
+        → StrategySelector    (hard overrides + risk thresholds)
+            → RAGModule       (7 advanced retrieval techniques)
+                → GenerationModule  (Ollama / llama3.2)
+                    → VerificationModule  (NLI cross-encoder)
+```
 
-| Dataset    | Accuracy | Hallucination Rate | Strategy Distribution                          |
-|------------|----------|--------------------|------------------------------------------------|
-| TruthfulQA | 20.0%    | 9.2%               | direct_llm: 496, rag: 273, rag_verification: 48 |
-| FEVER      | 70.5%    | 11.5%              | direct_llm: 738, rag: 1168, rag_verification: 94 |
+| Strategy | When triggered |
+|---|---|
+| `direct_llm` | Risk score < 0.20 — low-risk query, answer directly |
+| `rag` | Risk score 0.20–0.50 — ground answer with retrieved evidence |
+| `rag_verification` | Risk score ≥ 0.50, or citation/multi-hop/high-complexity query (hard override) |
 
-> Note: TruthfulQA accuracy reflects how well the risk predictor aligns with ground-truth hallucination labels. FEVER accuracy is higher because the majority class (SUPPORTS) dominates.
+**Hard overrides** fire before the risk threshold and guarantee grounded, verified answers for citation-heavy, multi-hop, or highly complex queries regardless of the predictor score.
+
+---
+
+## Key Results
+
+| Metric | Value |
+|---|---|
+| Predictor training set | 817 real TruthfulQA examples |
+| Predictor AUROC | 0.6338 |
+| Predictor F1 | 0.3788 |
+| Baseline uncertainty risk | 1.00 (all answers unverified) |
+| Pipeline uncertainty risk | ~0.44 (grounded + verified where possible) |
+| Risk reduction | ~56% |
+
+> Uncertainty risk scale: 0.0 = verified correct, 0.4 = RAG-grounded unverified, 0.7 = direct LLM unverified, 0.8 = hallucination detected (system caught it), 1.0 = baseline (no checking at all).
+
+---
+
+## Advanced RAG Techniques
+
+| Technique | Description |
+|---|---|
+| **HyDE** | Generates a hypothetical answer via Ollama to improve retrieval query quality |
+| **Multi-hop retrieval** | Two-stage retrieval: extracts entity concepts from the query, then runs a follow-up search |
+| **Query decomposition** | Breaks complex queries into sub-questions, retrieves for each independently |
+| **Cross-encoder reranking** | Re-scores retrieved docs with `ms-marco-MiniLM-L-6-v2` for relevance ordering |
+| **Contextual compression** | Filters each document to sentences relevant to the query via cosine similarity |
+| **Adaptive top-k** | Adjusts number of retrieved docs by query complexity (2 / 3 / 5) |
+| **Retrieval confidence** | Computes average top-doc score; falls back to direct LLM if below threshold (unless hard override active) |
+
+---
+
+## Knowledge Base
+
+- **46 Wikipedia articles** fetched via the Wikipedia REST API
+- **572 chunks** (200 tokens, 50-token overlap)
+- Covers science, history, economics, technology, and world events
+- Indexed with FAISS + `sentence-transformers/all-MiniLM-L6-v2`
 
 ---
 
 ## Project Structure
 
 ```
-hallucination_aware/
+Hallucination-Aware-LLMS/
 ├── config/
-│   └── config.yaml                  # All thresholds, model names, paths
+│   └── config.yaml                   # All thresholds, model names, paths
 ├── data/
-│   ├── faiss_index/                 # Built FAISS vector index
-│   ├── labeled_dataset.jsonl        # Synthetic training data
-│   ├── predictor.pkl                # Trained risk classifier
-│   ├── type_classifier.pkl          # Trained hallucination type classifier
-│   ├── truthfulqa.jsonl             # TruthfulQA benchmark (817 examples)
-│   ├── fever.jsonl                  # FEVER benchmark (2,000 examples)
-│   └── benchmark_results.json       # Evaluation output
+│   ├── faiss_index/                  # Built FAISS vector index
+│   ├── knowledge_base.jsonl          # 572-chunk Wikipedia knowledge base
+│   ├── labeled_dataset.jsonl         # Synthetic training data (1,300 examples)
+│   ├── predictor.pkl                 # Trained risk classifier
+│   ├── type_classifier.pkl           # Trained hallucination type classifier
+│   ├── truthfulqa.jsonl              # TruthfulQA benchmark (817 examples)
+│   ├── fever.jsonl                   # FEVER benchmark (2,000 examples)
+│   ├── experiment_results.jsonl      # Batch pipeline evaluation output
+│   └── comparison_results.json       # Baseline vs pipeline comparison output
 ├── modules/
-│   ├── __init__.py                  # load_config() utility
-│   ├── query_analyzer.py            # Feature extraction from queries
-│   ├── hallucination_predictor.py   # Risk scoring + type classification
-│   ├── strategy_selector.py         # Routes to direct_llm / rag / rag_verification
-│   ├── generation_module.py         # LLM prompt construction + generation
-│   ├── rag_module.py                # FAISS-based retrieval
-│   └── verification_module.py       # Post-generation claim verification
+│   ├── __init__.py                   # load_config() utility
+│   ├── query_analyzer.py             # Feature extraction (entities, complexity, flags)
+│   ├── hallucination_predictor.py    # Risk scoring + hybrid self-consistency
+│   ├── strategy_selector.py          # Routes to direct_llm / rag / rag_verification
+│   ├── generation_module.py          # Prompt construction + Ollama generation
+│   ├── rag_module.py                 # FAISS retrieval + 7 advanced techniques
+│   └── verification_module.py        # NLI claim verification
 ├── pipeline/
-│   ├── __init__.py
-│   └── pipeline.py                  # End-to-end orchestrator
+│   └── pipeline.py                   # End-to-end orchestrator
 ├── scripts/
-│   ├── build_index.py               # Build FAISS index from documents
-│   ├── label_dataset.py             # Generate synthetic training data
-│   ├── train_predictor.py           # Train the hallucination predictor
-│   ├── convert_truthfulqa.py        # Convert TruthfulQA to normalized format
-│   ├── convert_fever.py             # Convert FEVER to normalized format
-│   ├── evaluate_benchmarks.py       # Run pipeline on benchmark datasets
-│   └── run_experiments.py           # Batch pipeline evaluation
+│   ├── build_knowledge_base.py       # Fetch 46 Wikipedia articles into JSONL
+│   ├── build_index.py                # Build FAISS index from knowledge base
+│   ├── label_dataset.py              # Generate synthetic training data
+│   ├── train_predictor.py            # Train risk + type classifiers
+│   ├── train_on_truthfulqa.py        # Fine-tune predictor on real TruthfulQA data
+│   ├── convert_truthfulqa.py         # Convert TruthfulQA to normalized format
+│   ├── convert_fever.py              # Convert FEVER to normalized format
+│   ├── evaluate_benchmarks.py        # Run pipeline on benchmark datasets
+│   ├── run_experiments.py            # Batch pipeline evaluation
+│   └── compare_baseline.py           # Baseline vs pipeline comparison report
 ├── tests/
-│   ├── __init__.py
 │   ├── test_query_analyzer.py
 │   ├── test_hallucination_predictor.py
 │   ├── test_strategy_selector.py
 │   ├── test_generation_module.py
 │   ├── test_rag_module.py
 │   ├── test_verification_module.py
-│   ├── test_pipeline.py             # Integration tests
-│   └── test_benchmark_evaluation.py # Benchmark data + results validation
+│   ├── test_pipeline.py
+│   └── test_benchmark_evaluation.py
 ├── demo/
-│   └── app.py                       # Streamlit interactive demo
+│   └── app.py                        # Streamlit interactive demo
 ├── Makefile
 ├── requirements.txt
 └── README.md
@@ -73,157 +120,145 @@ hallucination_aware/
 
 ---
 
-## Setup Instructions
+## Setup
 
-### 1. Install dependencies
+### Prerequisites
+
+- [Ollama](https://ollama.com) installed and running
+- `llama3.2` model pulled:
+  ```bash
+  ollama pull llama3.2
+  ```
+
+### Install dependencies
 
 ```bash
-cd hallucination_aware
 pip install -r requirements.txt
 ```
 
-### 2. Configure
-
-Edit `config/config.yaml` to set your model name, thresholds, and file paths. The defaults work out of the box for local development.
-
-### 3. Build the FAISS index
+### Build the knowledge base and index
 
 ```bash
-# Build with sample documents (no input file needed)
+# Fetch 46 Wikipedia articles (572 chunks)
+python scripts/build_knowledge_base.py
+
+# Build FAISS index from the knowledge base
 python scripts/build_index.py
-
-# Or provide your own documents
-python scripts/build_index.py --input data/my_documents.jsonl
 ```
 
-### 4. (Optional) Generate training data and train the predictor
+### Train the predictor on real data
 
 ```bash
-# Generate 200 synthetic labelled examples
-python scripts/label_dataset.py --n 200
-
-# Train the hallucination predictor (uses the labelled dataset)
-python -c "
-from modules.hallucination_predictor import HallucinationPredictor
-p = HallucinationPredictor()
-metrics = p.train('data/labeled_dataset.jsonl')
-print(metrics)
-"
+# Train on 817 TruthfulQA examples (requires data/truthfulqa.jsonl)
+python scripts/train_on_truthfulqa.py
 ```
 
-### 5. Set your OpenAI API key (optional)
+### Launch the demo
 
 ```bash
-export OPENAI_API_KEY="sk-..."
+streamlit run demo/app.py
 ```
 
-> Without an API key the system returns placeholder answers but still runs the full pipeline (feature extraction, risk prediction, strategy selection, retrieval, and verification all work locally).
+Opens at `http://localhost:8501`.
 
 ---
 
-## 🧪 Running Each Module Standalone
-
-Every module has a `__main__` block for smoke testing:
+## Baseline vs Pipeline Comparison
 
 ```bash
-python -m modules.query_analyzer
-python -m modules.hallucination_predictor
-python -m modules.strategy_selector
-python -m modules.generation_module
-python -m modules.rag_module
-python -m modules.verification_module
+# Quick mode — 5 representative queries
+python scripts/compare_baseline.py --quick
+
+# Full mode — 15 queries
+python scripts/compare_baseline.py
+
+# Save results to a custom path
+python scripts/compare_baseline.py --output data/my_results.json
 ```
+
+The comparison measures **uncertainty risk** (0.0–1.0) for each answer:
+
+| Outcome | Risk score |
+|---|---|
+| Baseline (any answer) | 1.0 — completely unverified |
+| Pipeline: supported | 0.0 — verified correct |
+| Pipeline: partially supported | 0.3 — mostly correct |
+| Pipeline: unverified with RAG | 0.4 — grounded, not formally verified |
+| Pipeline: unverified direct LLM | 0.7 — no grounding |
+| Pipeline: refuted | 0.8 — hallucination caught (system worked) |
 
 ---
 
-## 🔗 Running the Full Pipeline
-
-```bash
-python -m pipeline.pipeline
-```
-
-Or in Python:
+## Running the Full Pipeline in Python
 
 ```python
 from pipeline.pipeline import Pipeline
 
 pipe = Pipeline()
 trace = pipe.run("What caused the 2008 financial crisis?")
-print(trace["strategy"])       # e.g. "rag_verification"
+
+print(trace["strategy"])                    # "rag_verification"
+print(trace["hard_override_applied"])       # True/False
+print(trace["retrieval_strategy"])          # "decomposed" / "multihop" / "standard"
+print(trace["retrieval_confidence"])        # e.g. 0.512
 print(trace["generation"]["answer"])
-print(trace["verification"])   # claim-level verification results
+print(trace["verification"]["verdict"])     # "supported" / "refuted" / ...
 ```
 
----
-
-## 🖥️ Launching the Demo
-
-```bash
-streamlit run demo/app.py
-```
-
-The demo runs on `http://localhost:8501` and provides:
-- Interactive query input with sample queries
-- Real-time risk scoring and strategy selection
-- Retrieved document display
-- Claim-level verification results
-- Full pipeline trace in JSON
-
----
-
-## 📊 Running Experiments
-
-```bash
-# Run with default queries
-python scripts/run_experiments.py
-
-# Run with a custom query file
-python scripts/run_experiments.py --queries my_queries.txt --output results.jsonl
-```
-
-The experiment script outputs:
-- Strategy distribution
-- Risk score statistics (mean, min, max)
-- Verification verdict counts
-- Predicted hallucination type distribution
-
----
-
-## 🧪 Running Tests
-
-```bash
-# All tests
-python -m pytest tests/ -v
-
-# Individual module tests
-python -m pytest tests/test_query_analyzer.py -v
-python -m pytest tests/test_hallucination_predictor.py -v
-python -m pytest tests/test_strategy_selector.py -v
-python -m pytest tests/test_generation_module.py -v
-python -m pytest tests/test_rag_module.py -v
-python -m pytest tests/test_verification_module.py -v
-```
-
----
-
-## ⚡ Pipeline Trace Format
-
-`Pipeline.run()` returns a single dict:
+### Full trace format
 
 ```python
 {
     "query": str,
-    "features": Dict,           # QueryAnalyzer output
-    "prediction": Dict,         # HallucinationPredictor output
-    "strategy": str,            # "direct_llm" | "rag" | "rag_verification"
-    "retrieved_docs": List,     # RAGModule output (empty if direct_llm)
-    "generation": Dict,         # GenerationModule output
-    "verification": Dict | None # VerificationModule output or None
+    "features": dict,                # entity count, complexity, flags
+    "prediction": dict,              # risk_score, hallucination_type, self_consistency
+    "strategy": str,                 # "direct_llm" | "rag" | "rag_verification"
+    "hard_override_applied": bool,   # True if routing was overridden by feature rules
+    "retrieval_strategy": str,       # "standard" | "multihop" | "decomposed"
+    "adaptive_topk_used": int,       # actual top-k used for retrieval
+    "reranking_applied": bool,
+    "compression_applied": bool,
+    "retrieval_confidence": float,   # avg similarity score of top docs
+    "retrieval_details": dict,       # sub-questions, follow-up query, fallback flags
+    "retrieved_docs": list,
+    "generation": dict,              # answer, strategy_used, prompt_tokens
+    "verification": dict | None,     # verified_claims, flagged_claims, verdict
+    "hybrid_scoring": bool,          # True when self-consistency was blended
+    "self_consistency_score": float | None,
+    "feature_risk_score": float | None,
 }
 ```
 
 ---
 
-## 📝 License
+## Demo Features
 
-This project is for research purposes.
+The Streamlit demo (`demo/app.py`) provides:
+
+- **4-column metrics row** — Risk Score, Strategy, Hallucination Type, Retrieval Confidence
+- **Strategy explanation** — a one-sentence caption explaining why the current strategy was chosen
+- **Hard override badge** — green callout when the system overrode the risk score (citation, multi-hop, or high-complexity detection)
+- **Baseline vs Pipeline comparison panel** — expandable side-by-side view with uncertainty risk scores and delta
+- **Self-consistency section** — shows hybrid scoring breakdown, sampled Ollama answers, and blending weights when active
+- **Retrieval Intelligence tab** — retrieval strategy badge, adaptive top-k, confidence progress bar, re-ranking and compression status, sub-questions and follow-up queries
+- **Verification Details tab** — per-claim supported/refuted breakdown with NLI method labels
+- **Full Trace tab** — complete pipeline trace as JSON
+
+---
+
+## Running Tests
+
+```bash
+# All tests
+python -m pytest tests/ -v
+
+# Individual modules
+python -m pytest tests/test_query_analyzer.py -v
+python -m pytest tests/test_pipeline.py -v
+```
+
+---
+
+## License
+
+This project is for research and educational purposes.

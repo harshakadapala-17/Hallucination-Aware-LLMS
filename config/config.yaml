@@ -1,0 +1,57 @@
+model:
+  provider: "ollama"              # "openai" or "ollama"
+  name: "llama3.2"               # lightweight model (~2GB), good speed/quality balance
+  temperature: 0.0
+  max_tokens: 256
+  ollama_base_url: "http://localhost:11434"
+
+strategy:
+  thresholds:
+    low: 0.35   # calibrated from labeled data (was 0.3)
+    high: 0.70
+  high_risk_types:
+    - "citation"
+    - "entity"
+    - "relation"
+    - "temporal"
+    - "reasoning"
+
+rag:
+  top_k: 3
+  chunk_size: 200
+  chunk_overlap: 50
+  index_path: "data/faiss_index"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  use_hyde: false   # set to true when using OpenAI (requires API key for query expansion)
+
+predictor:
+  model_type: "logistic_regression"   # or "xgboost"
+  model_path: "data/predictor.pkl"
+  type_model_path: "data/type_classifier.pkl"
+  test_size: 0.2
+  random_seed: 42
+
+labeling:
+  entity_sim_threshold: 0.85
+  llm_judge_model: "gpt-3.5-turbo"
+
+verification:
+  sim_threshold_supported: 0.65   # used only when use_nli_entailment: false
+  sim_threshold_refuted: 0.40     # used only when use_nli_entailment: false
+  max_claims: 5
+  use_nli_entailment: true        # uses cross-encoder/nli-deberta-v3-small
+  nli_model: "cross-encoder/nli-deberta-v3-small"
+  nli_entail_threshold: 0.6       # prob >= this → supported
+  nli_contradict_threshold: 0.5   # prob >= this → refuted
+
+data:
+  truthfulqa_path: "data/truthfulqa.jsonl"
+  fever_path: "data/fever.jsonl"
+  labeled_dataset_path: "data/labeled_dataset.jsonl"
+
+pipeline:
+  max_regeneration_retries: 1   # re-generate once if verdict is 'refuted'
+
+demo:
+  port: 8501
+  title: "Hallucination-Aware LLM System"

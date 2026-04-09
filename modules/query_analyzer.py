@@ -103,7 +103,7 @@ _ORG_KEYWORDS = re.compile(
 )
 _LOC_KEYWORDS = re.compile(
     r"\b(?:City|Country|State|Province|River|Mountain|Ocean|Sea|Island|"
-    r"Lake|Street|Avenue|Road|Boulevard)\b",
+    r"Lake|Street|Avenue|Road|Boulevard|Capital|Region|Territory|Nation)\b",
     re.IGNORECASE,
 )
 

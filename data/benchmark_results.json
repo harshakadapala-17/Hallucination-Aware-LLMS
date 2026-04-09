@@ -1,0 +1,20 @@
+{
+  "truthfulqa": {
+    "accuracy": 0.19951040391676866,
+    "hallucination_rate": 0.09179926560587515,
+    "strategy_dist": {
+      "direct_llm": 496,
+      "rag": 273,
+      "rag_verification": 48
+    }
+  },
+  "fever": {
+    "accuracy": 0.7045,
+    "hallucination_rate": 0.115,
+    "strategy_dist": {
+      "direct_llm": 738,
+      "rag": 1168,
+      "rag_verification": 94
+    }
+  }
+}

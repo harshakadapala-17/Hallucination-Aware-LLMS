@@ -10,7 +10,6 @@ Provides shared utilities (load_config) and all core modules:
   - VerificationModule
 """
 
-import os
 from pathlib import Path
 from typing import Dict, Any
 

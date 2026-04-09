@@ -143,8 +143,6 @@ class Pipeline:
 # ----------------------------------------------------------------------- #
 
 if __name__ == "__main__":
-    import json
-
     pipeline = Pipeline()
 
     queries = [
@@ -165,4 +163,4 @@ if __name__ == "__main__":
         if trace["verification"]:
             print(f"  Verdict:     {trace['verification']['verdict']}")
         else:
-            print(f"  Verdict:     (not verified)")
+            print("  Verdict:     (not verified)")

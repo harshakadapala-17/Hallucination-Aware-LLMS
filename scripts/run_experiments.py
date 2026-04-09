@@ -23,8 +23,8 @@ from typing import Any, Dict, List
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules import load_config
-from pipeline.pipeline import Pipeline
+from modules import load_config  # noqa: E402
+from pipeline.pipeline import Pipeline  # noqa: E402
 
 
 _DEFAULT_QUERIES: List[str] = [
@@ -90,7 +90,7 @@ def print_report(traces: List[Dict[str, Any]]) -> None:
 
     # Risk scores
     risk_scores = [t["prediction"]["risk_score"] for t in traces]
-    print(f"\n  Risk Score:")
+    print("\n  Risk Score:")
     print(f"    Mean:   {sum(risk_scores)/n:.4f}")
     print(f"    Min:    {min(risk_scores):.4f}")
     print(f"    Max:    {max(risk_scores):.4f}")
@@ -107,7 +107,7 @@ def print_report(traces: List[Dict[str, Any]]) -> None:
 
     # Hallucination types
     type_counts = Counter(t["prediction"]["hallucination_type"] for t in traces)
-    print(f"\n  Predicted Hallucination Types:")
+    print("\n  Predicted Hallucination Types:")
     for ht, c in type_counts.most_common():
         print(f"    {ht:<15s}  {c:>3d}")
 

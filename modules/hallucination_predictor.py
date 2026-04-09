@@ -14,7 +14,6 @@ trained on labelled data.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -195,7 +194,6 @@ class HallucinationPredictor:
             pos_idx = list(self.risk_model.classes_).index(1) if 1 in self.risk_model.classes_ else 0
             auroc = float(roc_auc_score(yr_test, yr_proba[:, pos_idx]))
 
-        yt_pred = self.type_model.predict(X_test)
         f1 = float(f1_score(yr_test, yr_pred, average="macro", zero_division=0))
 
         # Save models

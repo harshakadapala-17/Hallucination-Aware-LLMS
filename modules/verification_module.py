@@ -20,7 +20,7 @@ Two verification modes (controlled by config):
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -53,7 +53,6 @@ def _get_nli_model():
                 AutoTokenizer,
                 AutoModelForSequenceClassification,
             )
-            import torch as _torch
             _nli_tokenizer = AutoTokenizer.from_pretrained(_NLI_MODEL_NAME)
             _nli_model = AutoModelForSequenceClassification.from_pretrained(
                 _NLI_MODEL_NAME

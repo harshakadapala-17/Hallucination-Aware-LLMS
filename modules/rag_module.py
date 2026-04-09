@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -120,7 +120,6 @@ class RAGModule:
         query_vec = model.encode([search_text], normalize_embeddings=True)
         query_vec = np.array(query_vec, dtype=np.float32)
 
-        faiss = _get_faiss()
         k = min(top_k, len(self._documents))
         distances, indices = self._index.search(query_vec, k)
 

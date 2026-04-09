@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules import load_config
+from modules import load_config  # noqa: E402
 
 
 def convert_record(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -38,7 +38,6 @@ def convert_record(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
     question = raw.get("question", "")
     best_answer = raw.get("best_answer", "")
-    correct_answers = raw.get("correct_answers", [])
     incorrect_answers = raw.get("incorrect_answers", [])
     category = raw.get("category", "")
 

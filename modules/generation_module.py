@@ -18,7 +18,7 @@ Falls back to a placeholder response if no backend is available.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import tiktoken
 

@@ -33,8 +33,8 @@ from typing import Any, Dict, List, Optional, Tuple
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules import load_config
-from modules.query_analyzer import QueryAnalyzer
+from modules import load_config  # noqa: E402
+from modules.query_analyzer import QueryAnalyzer  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Built-in sample queries for synthetic mode

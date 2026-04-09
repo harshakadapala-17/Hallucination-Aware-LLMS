@@ -6,7 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from pipeline.pipeline import Pipeline
+from pipeline.pipeline import Pipeline  # noqa: E402
 
 
 def load_jsonl(path):
@@ -15,7 +15,7 @@ def load_jsonl(path):
         for line in f:
             try:
                 data.append(json.loads(line))
-            except:
+            except Exception:
                 continue
     return data
 

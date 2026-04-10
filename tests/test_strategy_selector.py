@@ -31,8 +31,8 @@ class TestRouting:
         assert result == "direct_llm"
 
     def test_medium_risk_rag(self, selector: StrategySelector) -> None:
-        # 0.5 is between low (0.3) and high (0.7), type is NOT high-risk
-        result = selector.select({"risk_score": 0.5, "hallucination_type": "none"})
+        # 0.35 is between low (0.20) and high (0.50), type is NOT high-risk
+        result = selector.select({"risk_score": 0.35, "hallucination_type": "none"})
         assert result == "rag"
 
     def test_high_risk_rag_verification(self, selector: StrategySelector) -> None:
@@ -90,7 +90,7 @@ class TestEdgeCases:
 
     def test_missing_type_defaults_to_none(self, selector: StrategySelector) -> None:
         # hallucination_type absent → treated as "none"
-        result = selector.select({"risk_score": 0.5})
+        result = selector.select({"risk_score": 0.35})
         assert result == "rag"
 
     def test_result_always_valid_strategy(self, selector: StrategySelector) -> None:

@@ -3,12 +3,30 @@ Hallucination Predictor Module
 ==============================
 
 Predicts the hallucination risk of a query based on features extracted by
-QueryAnalyzer. Uses a scikit-learn logistic regression (or XGBoost) classifier
-trained on labelled data.
+QueryAnalyzer.  Supports two scoring modes:
+
+Feature-only mode (default / fast):
+  Uses a scikit-learn logistic regression classifier trained on labelled data.
+  Falls back to a heuristic scorer when no trained model exists.
+
+Hybrid self-consistency mode (triggered when query is passed and config enables it):
+  Calls Ollama n_samples times at different temperatures and measures how
+  consistently the model answers the same question.  High answer variance
+  (low embedding similarity) signals uncertainty → high hallucination risk.
+  The final risk score is a weighted blend of the feature-based score and the
+  inconsistency score derived from self-consistency sampling.
+
+Self-consistency only triggers when:
+  1. A query string is passed to predict()
+  2. predictor.use_self_consistency: true in config
+  3. features["complexity_score"] > predictor.self_consistency_threshold
+
+This keeps latency low for simple queries while applying richer analysis to
+complex or high-risk ones.
 
 **Inputs**:  Feature dict from QueryAnalyzer.analyze()
-**Outputs**: ``{ risk_score: float, hallucination_type: str, type_confidence: float }``
-**Dependencies**: scikit-learn, joblib, numpy, PyYAML — no other project modules.
+**Outputs**: ``{ risk_score, hallucination_type, type_confidence, hybrid_scoring, ... }``
+**Dependencies**: scikit-learn, joblib, numpy, PyYAML, sentence-transformers, ollama
 """
 
 from __future__ import annotations
@@ -24,6 +42,31 @@ from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 
 from modules import load_config
+
+# ---------------------------------------------------------------------------
+# Lazy-loaded sentence-transformer for self-consistency embedding
+# ---------------------------------------------------------------------------
+
+_sc_model = None  # SentenceTransformer instance, shared across calls
+
+
+def _get_sc_model(model_name: str = "all-MiniLM-L6-v2"):
+    """Lazy-load a SentenceTransformer for self-consistency scoring.
+
+    Args:
+        model_name: HuggingFace model identifier.
+
+    Returns:
+        SentenceTransformer instance or None if unavailable.
+    """
+    global _sc_model
+    if _sc_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _sc_model = SentenceTransformer(model_name)
+        except Exception:
+            _sc_model = None
+    return _sc_model
 
 
 # ----------------------------------------------------------------------- #
@@ -54,6 +97,33 @@ _HALLUCINATION_TYPES: List[str] = [
     "temporal",
     "reasoning",
 ]
+
+# TruthfulQA category → hallucination type mapping
+_CATEGORY_TO_TYPE: Dict[str, str] = {
+    "fiction": "entity",
+    "misconception": "entity",
+    "myth": "entity",
+    "conspiracy": "entity",
+    "false": "entity",
+    "paranormal": "entity",
+    "superstition": "entity",
+    "quote": "citation",
+    "attribution": "citation",
+    "history": "temporal",
+    "dates": "temporal",
+    "timing": "temporal",
+    "law": "reasoning",
+    "statistics": "reasoning",
+    "mathematics": "reasoning",
+    "science": "reasoning",
+    "logic": "reasoning",
+}
+
+# TruthfulQA categories that suggest high hallucination risk (label=1 proxy)
+_HIGH_RISK_CATEGORIES = {
+    "fiction", "misconception", "myth", "conspiracy", "false belief",
+    "paranormal", "superstition", "misattributed", "myths and misconceptions",
+}
 
 
 def _features_to_vector(features: Dict[str, Any]) -> np.ndarray:
@@ -88,6 +158,11 @@ class HallucinationPredictor:
     When no trained model is available on disk the predictor falls back to a
     *heuristic* scoring mode so that the rest of the pipeline remains
     functional before any training data exists.
+
+    When ``query`` is passed to ``predict()`` and self-consistency is enabled
+    in config, additional Ollama calls are made to sample n answers at varied
+    temperatures.  The embedding variance across answers is blended with the
+    feature-based score for a more reliable final risk estimate.
     """
 
     def __init__(self, config: Dict[str, Any] | None = None) -> None:
@@ -114,24 +189,178 @@ class HallucinationPredictor:
     #  Public API                                                         #
     # ------------------------------------------------------------------ #
 
-    def predict(self, features: Dict[str, Any]) -> Dict[str, Any]:
+    def predict(
+        self,
+        features: Dict[str, Any],
+        query: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Predict hallucination risk from query features.
+
+        When *query* is provided and self-consistency is enabled in config,
+        a hybrid score (feature-based + self-consistency) is computed.
+        Otherwise only the feature-based score is returned.
 
         Args:
             features: Feature dict returned by ``QueryAnalyzer.analyze()``.
+            query: Optional raw query string.  Required for self-consistency.
 
         Returns:
-            Dict with ``risk_score`` (float 0-1), ``hallucination_type``
-            (str), and ``type_confidence`` (float 0-1).
+            Dict with:
+              ``risk_score`` (float 0-1),
+              ``hallucination_type`` (str),
+              ``type_confidence`` (float 0-1),
+              ``hybrid_scoring`` (bool),
+              and optionally ``self_consistency``, ``feature_risk_score``
+              when hybrid mode fires.
         """
         if not isinstance(features, dict):
             raise TypeError(f"features must be a dict, got {type(features).__name__}")
 
         vec = _features_to_vector(features).reshape(1, -1)
 
+        # Base feature-only prediction
         if self.risk_model is not None and self.type_model is not None:
-            return self._predict_with_model(vec)
-        return self._predict_heuristic(features)
+            base = self._predict_with_model(vec)
+        else:
+            base = self._predict_heuristic(features)
+
+        feature_risk = base["risk_score"]
+
+        # Check whether hybrid self-consistency scoring should fire
+        pred_cfg = self.config.get("predictor", {})
+        use_sc = pred_cfg.get("use_self_consistency", True)
+        sc_threshold = float(pred_cfg.get("self_consistency_threshold", 0.3))
+        complexity = float(features.get("complexity_score", 0.0))
+
+        if query and use_sc and complexity > sc_threshold:
+            n_samples = int(pred_cfg.get("self_consistency_samples", 3))
+            sc_result = self.compute_self_consistency(query, n_samples=n_samples)
+
+            w_feat = float(pred_cfg.get("feature_weight", 0.4))
+            w_sc = float(pred_cfg.get("self_consistency_weight", 0.6))
+            inconsistency = sc_result["inconsistency_score"]
+
+            hybrid_risk = round(w_feat * feature_risk + w_sc * inconsistency, 4)
+
+            return {
+                **base,
+                "risk_score": hybrid_risk,
+                "feature_risk_score": feature_risk,
+                "hybrid_scoring": True,
+                "self_consistency": sc_result,
+            }
+
+        # No hybrid — return base result with hybrid_scoring flag
+        return {
+            **base,
+            "hybrid_scoring": False,
+        }
+
+    def compute_self_consistency(
+        self,
+        query: str,
+        n_samples: int = 3,
+    ) -> Dict[str, Any]:
+        """Sample Ollama n times and measure answer consistency.
+
+        Calls Ollama at temperatures [0.3, 0.6, 0.9] (or linearly spaced
+        variants for n_samples != 3) to elicit a range of answers.  Encodes
+        all answers with a sentence-transformer and computes the average
+        pairwise cosine similarity.
+
+        High similarity → consistent → low hallucination risk.
+        Low similarity → inconsistent → high hallucination risk.
+
+        Args:
+            query: The user's question to sample.
+            n_samples: Number of Ollama calls (default 3).
+
+        Returns:
+            Dict with:
+              ``consistency_score`` (float 0-1, high = consistent),
+              ``inconsistency_score`` (float 0-1, high = inconsistent),
+              ``n_samples`` (int, 0 if Ollama unavailable),
+              ``answers`` (list[str]).
+        """
+        _fail = {
+            "consistency_score": 1.0,
+            "inconsistency_score": 0.0,
+            "n_samples": 0,
+            "answers": [],
+        }
+
+        model_cfg = self.config.get("model", {})
+        model_name = model_cfg.get("name", "llama3.2")
+
+        # Build temperature list — evenly spaced across [0.3, 0.9]
+        if n_samples == 1:
+            temperatures = [0.6]
+        else:
+            step = 0.6 / max(n_samples - 1, 1)
+            temperatures = [round(0.3 + i * step, 2) for i in range(n_samples)]
+
+        # Run all Ollama calls in parallel — cuts latency from ~3×t to ~1×t
+        def _single_call(args: tuple) -> str:
+            _model_name, _query, _temp = args
+            try:
+                import ollama
+                response = ollama.chat(
+                    model=_model_name,
+                    messages=[{"role": "user", "content": _query}],
+                    options={"temperature": _temp},
+                )
+                return response["message"]["content"].strip()
+            except Exception:
+                return ""
+
+        args_list = [(model_name, query, t) for t in temperatures]
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(temperatures)) as executor:
+                raw_answers = list(executor.map(_single_call, args_list))
+        except Exception:
+            return _fail
+
+        answers: List[str] = [a for a in raw_answers if a]
+
+        if len(answers) < 2:
+            # Not enough answers to compute pairwise similarity
+            return {
+                "consistency_score": 1.0,
+                "inconsistency_score": 0.0,
+                "n_samples": len(answers),
+                "answers": answers,
+            }
+
+        # Encode answers with sentence-transformer
+        emb_model = _get_sc_model()
+        if emb_model is None:
+            return _fail
+
+        try:
+            embeddings = emb_model.encode(answers, normalize_embeddings=True)
+            # Compute all pairwise cosine similarities (dot product on unit vecs)
+            sim_matrix = np.dot(embeddings, embeddings.T)
+            # Extract upper-triangle (excluding diagonal)
+            n = len(answers)
+            sims: List[float] = []
+            for i in range(n):
+                for j in range(i + 1, n):
+                    sims.append(float(sim_matrix[i, j]))
+
+            consistency = float(np.mean(sims)) if sims else 1.0
+            consistency = round(min(1.0, max(0.0, consistency)), 4)
+            inconsistency = round(1.0 - consistency, 4)
+
+            return {
+                "consistency_score": consistency,
+                "inconsistency_score": inconsistency,
+                "n_samples": len(answers),
+                "answers": answers,
+            }
+
+        except Exception:
+            return _fail
 
     def train(self, dataset_path: str) -> Dict[str, float]:
         """Train risk and type classifiers from a labelled JSONL dataset.
@@ -191,7 +420,10 @@ class HallucinationPredictor:
         if len(unique_classes) < 2:
             auroc = 0.0
         else:
-            pos_idx = list(self.risk_model.classes_).index(1) if 1 in self.risk_model.classes_ else 0
+            pos_idx = (
+                list(self.risk_model.classes_).index(1)
+                if 1 in self.risk_model.classes_ else 0
+            )
             auroc = float(roc_auc_score(yr_test, yr_proba[:, pos_idx]))
 
         f1 = float(f1_score(yr_test, yr_pred, average="macro", zero_division=0))
@@ -210,7 +442,10 @@ class HallucinationPredictor:
         assert self.risk_model is not None and self.type_model is not None
 
         risk_proba = self.risk_model.predict_proba(vec)[0]
-        pos_idx = list(self.risk_model.classes_).index(1) if 1 in self.risk_model.classes_ else 0
+        pos_idx = (
+            list(self.risk_model.classes_).index(1)
+            if 1 in self.risk_model.classes_ else 0
+        )
         risk_score = float(risk_proba[pos_idx])
 
         type_proba = self.type_model.predict_proba(vec)[0]
@@ -231,14 +466,13 @@ class HallucinationPredictor:
         Uses the complexity_score directly as the risk proxy.
         """
         complexity = float(features.get("complexity_score", 0.0))
-        risk_score = complexity  # direct proxy
+        risk_score = complexity
 
-        # Heuristic type assignment (priority order)
         entity_count = features.get("entity_count", 0)
         contains_citation = features.get("contains_citation_pattern", False)
         contains_date = features.get("contains_date", False)
         multi_hop = features.get("multi_hop_indicator", False)
-        
+
         if contains_citation:
             h_type = "citation"
         elif contains_date:
@@ -319,22 +553,17 @@ if __name__ == "__main__":
         "complexity_score": 0.72,
     }
 
-    print("=== Hallucination Predictor (heuristic mode) ===")
+    print("=== Hallucination Predictor (feature-only mode) ===")
     result = predictor.predict(sample_features)
     for k, v in result.items():
         print(f"  {k}: {v}")
 
-    minimal_features = {
-        "entity_count": 0,
-        "query_length_tokens": 3,
-        "contains_date": False,
-        "contains_citation_pattern": False,
-        "multi_hop_indicator": False,
-        "entity_type_flags": {"PERSON": False, "ORG": False, "LOC": False, "DATE": False},
-        "avg_token_length": 4.0,
-        "complexity_score": 0.1,
-    }
-    print("\n=== Low-risk query ===")
-    result2 = predictor.predict(minimal_features)
+    print("\n=== With self-consistency (if Ollama is running) ===")
+    result2 = predictor.predict(sample_features, query="What caused the 2008 financial crisis?")
     for k, v in result2.items():
-        print(f"  {k}: {v}")
+        if k != "self_consistency":
+            print(f"  {k}: {v}")
+    if result2.get("self_consistency"):
+        sc = result2["self_consistency"]
+        print(f"  self_consistency.consistency_score: {sc['consistency_score']}")
+        print(f"  self_consistency.n_samples: {sc['n_samples']}")

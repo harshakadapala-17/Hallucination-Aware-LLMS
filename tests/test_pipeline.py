@@ -61,8 +61,13 @@ def complex_trace(pipeline: Pipeline) -> dict:
 class TestTraceStructure:
     def test_trace_has_required_keys(self, simple_trace: dict) -> None:
         expected = {"query", "features", "prediction", "strategy",
-                    "retrieved_docs", "generation", "verification"}
-        assert set(simple_trace.keys()) == expected
+                    "retrieved_docs", "generation", "verification",
+                    "hard_override_applied", "retrieval_strategy",
+                    "adaptive_topk_used", "reranking_applied",
+                    "compression_applied", "retrieval_confidence",
+                    "retrieval_details", "hybrid_scoring",
+                    "feature_risk_score", "self_consistency_score"}
+        assert expected.issubset(set(simple_trace.keys()))
 
     def test_strategy_is_valid_value(self, simple_trace: dict) -> None:
         assert simple_trace["strategy"] in {"direct_llm", "rag", "rag_verification"}
@@ -128,7 +133,7 @@ class TestRoutingInvariants:
 
     def test_strategy_selector_logic_rag(self) -> None:
         selector = StrategySelector()
-        result = selector.select({"risk_score": 0.5, "hallucination_type": "none"})
+        result = selector.select({"risk_score": 0.35, "hallucination_type": "none"})
         assert result == "rag"
 
     def test_strategy_selector_logic_rag_verification(self) -> None:

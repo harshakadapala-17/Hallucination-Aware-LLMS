@@ -90,7 +90,7 @@ def predictor() -> HallucinationPredictor:
 class TestHeuristicPredict:
     def test_returns_correct_keys(self, predictor: HallucinationPredictor) -> None:
         result = predictor.predict(_make_features())
-        assert set(result.keys()) == {"risk_score", "hallucination_type", "type_confidence"}
+        assert set(result.keys()) >= {"risk_score", "hallucination_type", "type_confidence"}
 
     def test_risk_score_bounded(self, predictor: HallucinationPredictor) -> None:
         result = predictor.predict(_make_features(complexity_score=0.95))

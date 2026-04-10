@@ -58,26 +58,27 @@ class Pipeline:
         """Run the full pipeline on a single query.
 
         Steps:
-          1.  Analyse query features.
-          2.  Predict hallucination risk.
-          3.  Select answering strategy.
-          4.  Retrieve documents (adaptive top_k, routing by complexity).
-          4b. Re-rank retrieved documents with cross-encoder.
-          4c. Check retrieval confidence; fall back to direct_llm if low.
-          4d. Compress context to query-relevant sentences.
-          5.  Generate answer.
-          6.  Verify answer (if strategy is rag_verification).
-          6b. Re-generate if verdict is 'refuted'.
-          7.  Return full trace dict.
+          1. Analyse query features.
+          2. Predict hallucination risk.
+          3. Select answering strategy.
+          4. Unified agent loop (max_agent_iterations):
+               a. Retrieve documents (adaptive top_k, routing by complexity).
+               b. Re-rank with cross-encoder.
+               c. Check retrieval confidence; reformulate + retry if low.
+               d. Compress context.
+               e. Generate answer.
+               f. Verify answer (if strategy is rag_verification).
+               g. If refuted: reformulate query + retry full loop.
+               h. If supported / partially_supported / last iteration: stop.
+          5. Return full trace dict with agent loop metadata.
 
         Args:
             query: The user's question.
 
         Returns:
-            Trace dict with all pipeline fields including new retrieval
-            intelligence fields (retrieval_strategy, reranking_applied,
-            compression_applied, adaptive_topk_used, retrieval_confidence,
-            retrieval_details).
+            Trace dict with all pipeline fields plus agentic fields:
+            agent_iterations, agent_log, final_query_used,
+            query_reformulated.
 
         Raises:
             TypeError: If *query* is not a str.
@@ -113,131 +114,174 @@ class Pipeline:
         retrieval_confidence: float = 0.0
         retrieval_details: Dict[str, Any] = {}
 
-        # Step 4: Retrieve (only for rag / rag_verification)
-        if strategy in ("rag", "rag_verification"):
-            rag_cfg = self.config.get("rag", {})
-            complexity = float(features.get("complexity_score", 0.5))
+        # ── Agentic loop state ────────────────────────────────────────────
+        rag_cfg = self.config.get("rag", {})
+        max_iterations: int = int(rag_cfg.get("max_agent_iterations", 2))
+        iteration: int = 0
+        current_query: str = query   # may be reformulated across iterations
+        agent_log: List[Dict[str, Any]] = []
+        generation: Dict[str, Any] = {"answer": "", "strategy_used": strategy}
+        verification: Optional[Dict[str, Any]] = None
 
-            # 4a — adaptive top_k
+        # ── Short-circuit: direct_llm needs no retrieval or agent loop ────
+        if strategy == "direct_llm":
+            generation = self.generator.generate(query, "direct_llm", context=[])
+        else:
+            # ── Unified agent loop ────────────────────────────────────────
+            # Each iteration attempts retrieval → generation → verification.
+            # If the attempt fails (low confidence or refuted) the query is
+            # reformulated via Ollama and the loop restarts from retrieval.
+            # Hard max of max_agent_iterations prevents infinite loops.
+            complexity = float(features.get("complexity_score", 0.5))
+            multi_hop = bool(features.get("multi_hop_indicator", False))
+            citation = bool(features.get("contains_citation_pattern", False))
+            high_complexity = complexity > 0.7
+            use_decomp = rag_cfg.get("use_query_decomposition", True)
+            use_reranking = rag_cfg.get("use_reranking", True)
+            use_compression = rag_cfg.get("use_contextual_compression", True)
+            min_conf = float(rag_cfg.get("min_retrieval_confidence", 0.3))
+
+            # Adaptive top_k is fixed per query (complexity doesn't change)
             if rag_cfg.get("use_adaptive_topk", True):
                 top_k = self.rag.get_adaptive_topk(complexity)
             else:
                 top_k = int(rag_cfg.get("top_k", 3))
             adaptive_topk_used = top_k
 
-            # 4b — choose retrieval method
-            multi_hop = bool(features.get("multi_hop_indicator", False))
-            citation = bool(features.get("contains_citation_pattern", False))
-            high_complexity = complexity > 0.7
-            use_decomp = rag_cfg.get("use_query_decomposition", True)
+            while iteration < max_iterations:
+                iteration += 1
 
-            if use_decomp and (citation or high_complexity):
-                # Decomposed retrieval: most thorough, covers high-complexity
-                retrieved_docs = self.rag.retrieve_decomposed(query, top_k=top_k)
-                retrieval_strategy = "decomposed"
-                retrieval_details["sub_questions"] = list(
-                    getattr(self.rag, "_last_sub_questions", [])
-                )
-            elif multi_hop:
-                # Multi-hop: two-stage retrieval using extracted concepts
-                retrieved_docs = self.rag.retrieve_multihop(query, top_k=top_k)
-                retrieval_strategy = "multihop"
-                retrieval_details["follow_up_query"] = getattr(
-                    self.rag, "_last_followup_query", ""
-                )
-            else:
-                # Standard vector search
-                retrieved_docs = self.rag.retrieve(query, top_k=top_k)
-                retrieval_strategy = "standard"
+                # ── 4a: Choose retrieval method for current_query ─────────
+                if use_decomp and (citation or high_complexity):
+                    retrieved_docs = self.rag.retrieve_decomposed(
+                        current_query, top_k=top_k
+                    )
+                    retrieval_strategy = "decomposed"
+                    retrieval_details["sub_questions"] = list(
+                        getattr(self.rag, "_last_sub_questions", [])
+                    )
+                elif multi_hop:
+                    retrieved_docs = self.rag.retrieve_multihop(
+                        current_query, top_k=top_k
+                    )
+                    retrieval_strategy = "multihop"
+                    retrieval_details["follow_up_query"] = getattr(
+                        self.rag, "_last_followup_query", ""
+                    )
+                else:
+                    retrieved_docs = self.rag.retrieve(current_query, top_k=top_k)
+                    retrieval_strategy = "standard"
 
-            # 4c — cross-encoder re-ranking
-            if rag_cfg.get("use_reranking", True) and retrieved_docs:
-                retrieved_docs = self.rag.rerank(query, retrieved_docs)
-                reranking_applied = True
+                # ── 4b: Cross-encoder re-ranking ──────────────────────────
+                if use_reranking and retrieved_docs:
+                    retrieved_docs = self.rag.rerank(current_query, retrieved_docs)
+                    reranking_applied = True
 
-            # 4d — retrieval confidence check
-            retrieval_confidence = self.rag.get_retrieval_confidence(retrieved_docs)
-            min_conf = float(rag_cfg.get("min_retrieval_confidence", 0.3))
+                # ── 4c: Retrieval confidence check ────────────────────────
+                retrieval_confidence = self.rag.get_retrieval_confidence(retrieved_docs)
 
-            if retrieved_docs and retrieval_confidence < min_conf and not hard_override:
-                # Poor retrieval AND no hard override: fall back to direct LLM.
-                # Hard-override queries (citation, multi-hop, high complexity) must
-                # remain grounded even if the index is sparse — falling back to a
-                # bare LLM would be worse than using low-confidence retrieved docs.
-                strategy = "direct_llm"
-                retrieved_docs = []
-                retrieval_details["confidence_fallback"] = True
-            elif retrieved_docs and retrieval_confidence < min_conf and hard_override:
-                # Low confidence but hard override active — keep docs, flag it.
-                retrieval_details["low_confidence_override"] = True
-            if rag_cfg.get("use_contextual_compression", True) and retrieved_docs:
-                # 4e — contextual compression
-                retrieved_docs = self.rag.compress_context(query, retrieved_docs)
-                compression_applied = True
+                if retrieved_docs and retrieval_confidence < min_conf and not hard_override:
+                    if iteration < max_iterations:
+                        # Confidence too low — reformulate query and retry
+                        reformulated = self.rag.reformulate_query(
+                            query,
+                            context="No relevant documents found",
+                            reason="low_retrieval_confidence",
+                        )
+                        agent_log.append({
+                            "iteration": iteration,
+                            "action": "reformulate_query",
+                            "reason": "low_retrieval_confidence",
+                            "original_query": current_query,
+                            "reformulated_query": reformulated,
+                        })
+                        current_query = reformulated
+                        # Reset retrieved_docs for the next iteration
+                        retrieved_docs = []
+                        continue  # restart loop with reformulated query
+                    else:
+                        # Last iteration — give up on RAG, fall back to direct_llm
+                        strategy = "direct_llm"
+                        retrieved_docs = []
+                        retrieval_details["confidence_fallback"] = True
+                elif retrieved_docs and retrieval_confidence < min_conf and hard_override:
+                    # Hard override active — keep docs despite low confidence
+                    retrieval_details["low_confidence_override"] = True
 
-        # Step 5: Generate
-        context_texts = [doc["text"] for doc in retrieved_docs]
-        generation: Dict[str, Any] = self.generator.generate(
-            query, strategy, context=context_texts
-        )
+                # ── 4d: Contextual compression ────────────────────────────
+                if use_compression and retrieved_docs:
+                    retrieved_docs = self.rag.compress_context(
+                        current_query, retrieved_docs
+                    )
+                    compression_applied = True
 
-        # Step 6: Verify (only for rag_verification)
-        verification: Optional[Dict[str, Any]] = None
-        if strategy == "rag_verification" and retrieved_docs:
-            verification = self.verifier.verify(
-                generation["answer"], retrieved_docs
-            )
-
-            # Step 6b: Re-generate if answer was refuted
-            max_retries = self.config.get("pipeline", {}).get("max_regeneration_retries", 1)
-            retries = 0
-            while (
-                verification.get("verdict") == "refuted"
-                and retries < max_retries
-            ):
+                # ── 5: Generate ───────────────────────────────────────────
+                context_texts = [doc["text"] for doc in retrieved_docs]
                 generation = self.generator.generate(
-                    query,
-                    "rag_verification",
-                    context=context_texts,
-                    retry_hint=(
-                        "Your previous answer contained claims that could not be "
-                        "verified. Answer ONLY using the provided documents. "
-                        "If the documents do not support an answer, say so explicitly."
-                    ),
+                    current_query, strategy, context=context_texts
                 )
-                verification = self.verifier.verify(
-                    generation["answer"], retrieved_docs
-                )
-                retries += 1
 
-            if retries > 0:
-                generation["regenerated"] = retries
+                # ── 6: Verify (only for rag_verification) ─────────────────
+                verification = None
+                if strategy == "rag_verification" and retrieved_docs:
+                    verification = self.verifier.verify(
+                        generation["answer"], retrieved_docs
+                    )
+                    verdict = verification.get("verdict")
 
-        # Step 7: Assemble trace
+                    if verdict == "refuted" and iteration < max_iterations:
+                        # Refuted — reformulate query and retry the full loop
+                        reformulated = self.rag.reformulate_query(
+                            query,
+                            context=generation["answer"][:200],
+                            reason="refuted",
+                        )
+                        agent_log.append({
+                            "iteration": iteration,
+                            "action": "reformulate_and_retry",
+                            "reason": "refuted",
+                            "original_query": current_query,
+                            "reformulated_query": reformulated,
+                        })
+                        current_query = reformulated
+                        continue  # restart loop with reformulated query
+
+                # Supported, partially_supported, unverifiable, or last
+                # iteration — accept this result and exit the loop.
+                break
+
+        # ── Step 5: Assemble trace ────────────────────────────────────────
+        query_reformulated: bool = current_query != query
+
         trace: Dict[str, Any] = {
-            "query": query,
+            "query": query,                          # always the original
             "features": features,
             "prediction": prediction,
             "strategy": strategy,
             "retrieved_docs": retrieved_docs,
             "generation": generation,
             "verification": verification,
-            # ── Retrieval intelligence ────────────────────────────────
+            # ── Retrieval intelligence ─────────────────────────────────
             "retrieval_strategy": retrieval_strategy,
             "adaptive_topk_used": adaptive_topk_used,
             "reranking_applied": reranking_applied,
             "compression_applied": compression_applied,
             "retrieval_confidence": retrieval_confidence,
             "retrieval_details": retrieval_details,
-            # ── Hard override ─────────────────────────────────────────
+            # ── Hard override ──────────────────────────────────────────
             "hard_override_applied": hard_override,
-            # ── Hybrid scoring ────────────────────────────────────────
+            # ── Hybrid scoring ─────────────────────────────────────────
             "hybrid_scoring": prediction.get("hybrid_scoring", False),
             "self_consistency_score": (
                 prediction.get("self_consistency", {}).get("consistency_score")
                 if prediction.get("hybrid_scoring") else None
             ),
             "feature_risk_score": prediction.get("feature_risk_score"),
+            # ── Agent loop metadata ────────────────────────────────────
+            "agent_iterations": iteration if strategy != "direct_llm" else 0,
+            "agent_log": agent_log,
+            "final_query_used": current_query,
+            "query_reformulated": query_reformulated,
         }
 
         return trace
@@ -274,3 +318,7 @@ if __name__ == "__main__":
             print(f"  Verdict:           {trace['verification']['verdict']}")
         else:
             print("  Verdict:           (not verified)")
+        print(f"  Agent iterations:  {trace['agent_iterations']}")
+        print(f"  Query reformulated:{trace['query_reformulated']}")
+        if trace["query_reformulated"]:
+            print(f"  Final query:       {trace['final_query_used'][:80]}")

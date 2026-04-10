@@ -518,13 +518,13 @@ class HallucinationPredictor:
         """
         assert self.risk_model is not None and self.type_model is not None
 
-        # Determine expected vector size from the trained model
-        expected_dim = getattr(self.risk_model, "n_features_in_", len(_FEATURE_KEYS))
-        if expected_dim == len(_FEATURE_KEYS):
-            # Legacy 11-dim model — use base features only
+        # Select vector dimension by inspecting the saved model directly.
+        # n_features_in_ is set by sklearn at fit time and is always reliable.
+        if self.risk_model.n_features_in_ == len(_FEATURE_KEYS):
+            # Old 11-dim model — use base surface features only
             vec = _features_to_vector(features).reshape(1, -1)
         else:
-            # Enhanced 395-dim model — concatenate surface features + embedding
+            # New 395-dim model — concatenate surface features + query embedding
             vec = _features_to_vector_enhanced(features, query).reshape(1, -1)
 
         risk_proba = self.risk_model.predict_proba(vec)[0]

@@ -540,6 +540,73 @@ class RAGModule:
         self._save_index()
 
     # ------------------------------------------------------------------ #
+    #  Agentic query reformulation (Ollama)                              #
+    # ------------------------------------------------------------------ #
+
+    def reformulate_query(
+        self,
+        original_query: str,
+        context: str,
+        reason: str,
+    ) -> str:
+        """Reformulate a query based on why the previous attempt failed.
+
+        Used by the agent loop in pipeline.py to produce a more specific or
+        more retrievable version of the query after a failed iteration.
+
+        Args:
+            original_query: The original user question.
+            context: A short string describing what happened in the previous
+                attempt (e.g. the partial answer or "No relevant documents found").
+            reason: One of "low_retrieval_confidence", "refuted",
+                "partially_supported".
+
+        Returns:
+            Reformulated query string, or the original query unchanged if
+            Ollama is unavailable or the call fails.
+        """
+        model_cfg = self.config.get("model", {})
+        model_name = model_cfg.get("name", "llama3.2")
+
+        reason_hints = {
+            "low_retrieval_confidence": (
+                "no relevant documents were found in the knowledge base"
+            ),
+            "refuted": (
+                "the generated answer contained claims that could not be verified "
+                "and were flagged as potentially incorrect"
+            ),
+            "partially_supported": (
+                "the generated answer was only partially supported by the "
+                "retrieved documents"
+            ),
+        }
+        reason_text = reason_hints.get(reason, reason)
+
+        prompt = (
+            f"Given this original question: {original_query}\n"
+            f"The previous attempt failed because: {reason_text}\n"
+            f"Context from previous attempt: {context}\n"
+            "Reformulate the question to be more specific and retrievable.\n"
+            "Return ONLY the reformulated question, nothing else."
+        )
+
+        try:
+            import ollama
+            response = ollama.chat(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.3},
+            )
+            reformulated = response["message"]["content"].strip()
+            # Guard: if Ollama returns empty or very long output, fall back
+            if not reformulated or len(reformulated) > 500:
+                return original_query
+            return reformulated
+        except Exception:
+            return original_query
+
+    # ------------------------------------------------------------------ #
     #  HyDE — Hypothetical Document Embeddings (Ollama)                  #
     # ------------------------------------------------------------------ #
 

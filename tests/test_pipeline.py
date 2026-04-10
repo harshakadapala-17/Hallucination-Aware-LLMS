@@ -60,13 +60,13 @@ def complex_trace(pipeline: Pipeline) -> dict:
 
 class TestTraceStructure:
     def test_trace_has_required_keys(self, simple_trace: dict) -> None:
-        expected = {
-            "query", "features", "prediction", "strategy", "retrieved_docs",
-            "generation", "verification", "hard_override_applied",
-            "retrieval_strategy", "adaptive_topk_used", "reranking_applied",
-            "compression_applied", "retrieval_confidence", "retrieval_details",
-            "hybrid_scoring", "feature_risk_score", "self_consistency_score",
-        }
+        expected = {"query", "features", "prediction", "strategy",
+                    "retrieved_docs", "generation", "verification",
+                    "hard_override_applied", "retrieval_strategy",
+                    "adaptive_topk_used", "reranking_applied",
+                    "compression_applied", "retrieval_confidence",
+                    "retrieval_details", "hybrid_scoring",
+                    "feature_risk_score", "self_consistency_score"}
         assert expected.issubset(set(simple_trace.keys()))
 
     def test_strategy_is_valid_value(self, simple_trace: dict) -> None:

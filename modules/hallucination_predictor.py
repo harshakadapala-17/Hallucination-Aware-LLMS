@@ -133,7 +133,7 @@ def _features_to_vector(features: Dict[str, Any]) -> np.ndarray:
         features: Dict produced by ``QueryAnalyzer.analyze()``.
 
     Returns:
-        1-D numpy array of shape ``(len(_FEATURE_KEYS),)``.
+        1-D numpy array of shape ``(len(_FEATURE_KEYS),)`` i.e. (11,).
     """
     entity_flags = features.get("entity_type_flags", {})
     vec = [
@@ -150,6 +150,52 @@ def _features_to_vector(features: Dict[str, Any]) -> np.ndarray:
         float(entity_flags.get("DATE", False)),
     ]
     return np.array(vec, dtype=np.float64)
+
+
+def _encode_query(query: str) -> np.ndarray:
+    """Encode a query string into a 384-dim sentence embedding.
+
+    Reuses the same all-MiniLM-L6-v2 model as self-consistency scoring to
+    avoid loading a second model into memory.  Returns a zero vector if the
+    sentence-transformer is unavailable so the pipeline degrades gracefully.
+
+    Args:
+        query: Raw query string to encode.
+
+    Returns:
+        384-dimensional numpy float64 array (zeros on failure).
+    """
+    model = _get_sc_model()
+    if model is None:
+        return np.zeros(384, dtype=np.float64)
+    try:
+        emb = model.encode([query], normalize_embeddings=True)
+        return emb[0].astype(np.float64)
+    except Exception:
+        return np.zeros(384, dtype=np.float64)
+
+
+def _features_to_vector_enhanced(
+    features: Dict[str, Any],
+    query: Optional[str] = None,
+) -> np.ndarray:
+    """Build a 395-dim feature vector: 11 surface features + 384-dim embedding.
+
+    Concatenates the hand-crafted surface features with the query's sentence
+    embedding so the classifier has both linguistic and semantic signal.
+    When no query is provided or the sentence transformer is unavailable,
+    the embedding portion is padded with zeros to keep the dimension fixed.
+
+    Args:
+        features: Feature dict from QueryAnalyzer.analyze().
+        query: Optional raw query string for embedding.
+
+    Returns:
+        395-dimensional numpy float64 array.
+    """
+    base = _features_to_vector(features)  # shape (11,)
+    emb = _encode_query(query) if query else np.zeros(384, dtype=np.float64)
+    return np.concatenate([base, emb])
 
 
 class HallucinationPredictor:
@@ -216,11 +262,9 @@ class HallucinationPredictor:
         if not isinstance(features, dict):
             raise TypeError(f"features must be a dict, got {type(features).__name__}")
 
-        vec = _features_to_vector(features).reshape(1, -1)
-
-        # Base feature-only prediction
+        # Base feature-only prediction — query is passed through for embedding
         if self.risk_model is not None and self.type_model is not None:
-            base = self._predict_with_model(vec)
+            base = self._predict_with_model(features, query)
         else:
             base = self._predict_heuristic(features)
 
@@ -384,12 +428,24 @@ class HallucinationPredictor:
         if not dataset_path_obj.exists():
             raise FileNotFoundError(f"Dataset not found: {dataset_path}")
 
-        X, y_risk, y_type = self._load_dataset(dataset_path)
+        X_base, y_risk, y_type, queries = self._load_dataset(dataset_path)
 
-        if len(X) < 10:
+        if len(X_base) < 10:
             raise ValueError(
-                f"Dataset too small ({len(X)} samples). Need at least 10."
+                f"Dataset too small ({len(X_base)} samples). Need at least 10."
             )
+
+        # Build enhanced 395-dim feature matrix: 11 surface + 384 query embedding.
+        # The sentence-transformer is lazy-loaded; encoding ~800 queries takes ~5–10s.
+        print(
+            f"  Encoding {len(queries)} queries with all-MiniLM-L6-v2 "
+            "(11 surface features + 384-dim embedding) ..."
+        )
+        enhanced_rows: list[np.ndarray] = []
+        for feat_row, query in zip(X_base, queries):
+            emb = _encode_query(query) if query else np.zeros(384, dtype=np.float64)
+            enhanced_rows.append(np.concatenate([feat_row, emb]))
+        X = np.vstack(enhanced_rows)  # shape (n_samples, 395)
 
         # Split
         X_train, X_test, yr_train, yr_test, yt_train, yt_test = train_test_split(
@@ -437,9 +493,39 @@ class HallucinationPredictor:
     #  Internal helpers                                                   #
     # ------------------------------------------------------------------ #
 
-    def _predict_with_model(self, vec: np.ndarray) -> Dict[str, Any]:
-        """Predict using trained sklearn models."""
+    def _predict_with_model(
+        self,
+        features: Dict[str, Any],
+        query: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Predict using trained sklearn models.
+
+        Automatically selects the right feature vector dimension based on
+        how the loaded model was trained:
+          - n_features_in_ == 11  → base 11-dim vector  (old model)
+          - n_features_in_ == 395 → enhanced 395-dim vector (new model)
+
+        This ensures backward compatibility with models trained before the
+        embedding upgrade.
+
+        Args:
+            features: Feature dict from QueryAnalyzer.analyze().
+            query: Optional raw query string; used for embedding when the
+                   loaded model was trained with enhanced vectors.
+
+        Returns:
+            Dict with risk_score, hallucination_type, type_confidence.
+        """
         assert self.risk_model is not None and self.type_model is not None
+
+        # Determine expected vector size from the trained model
+        expected_dim = getattr(self.risk_model, "n_features_in_", len(_FEATURE_KEYS))
+        if expected_dim == len(_FEATURE_KEYS):
+            # Legacy 11-dim model — use base features only
+            vec = _features_to_vector(features).reshape(1, -1)
+        else:
+            # Enhanced 395-dim model — concatenate surface features + embedding
+            vec = _features_to_vector_enhanced(features, query).reshape(1, -1)
 
         risk_proba = self.risk_model.predict_proba(vec)[0]
         pos_idx = (
@@ -492,11 +578,25 @@ class HallucinationPredictor:
 
     def _load_dataset(
         self, dataset_path: str
-    ) -> tuple[np.ndarray, list[int], list[str]]:
-        """Load labelled JSONL and return X matrix + label vectors."""
+    ) -> tuple[np.ndarray, list[int], list[str], list[str]]:
+        """Load labelled JSONL and return X matrix, label vectors, and queries.
+
+        Extracts the "query" field from each record alongside features and
+        labels.  The X matrix contains only the 11-dim surface feature vectors;
+        enhanced embedding concatenation is handled by train() so that a
+        progress message can be shown before the (slow) encoding step.
+
+        Args:
+            dataset_path: Path to labelled JSONL file.
+
+        Returns:
+            Tuple of (X, y_risk, y_type, queries) where queries is a list of
+            raw query strings (empty string when the field is absent).
+        """
         X_list: list[np.ndarray] = []
         y_risk: list[int] = []
         y_type: list[str] = []
+        queries: list[str] = []
 
         with open(dataset_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -508,9 +608,10 @@ class HallucinationPredictor:
                 X_list.append(_features_to_vector(feats))
                 y_risk.append(int(record.get("is_hallucination", False)))
                 y_type.append(record.get("hallucination_type", "none"))
+                queries.append(record.get("query", ""))
 
         X = np.vstack(X_list) if X_list else np.empty((0, len(_FEATURE_KEYS)))
-        return X, y_risk, y_type
+        return X, y_risk, y_type, queries
 
     def _try_load_models(self) -> None:
         """Attempt to load saved models from disk (silent on failure)."""

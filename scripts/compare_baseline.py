@@ -329,10 +329,10 @@ def print_table(results: list[dict]) -> None:
     print(box())
     print(box(f"Hallucinations caught by pipeline: {caught_count}"))
     print(box(
-        f"  (queries where pipeline detected refuted claims that baseline"
+        "  (queries where pipeline detected refuted claims that baseline"
     ))
     print(box(
-        f"   would have silently returned as fact)"
+        "   would have silently returned as fact)"
     ))
     print(box())
     print(box("* refuted = system SUCCESSFULLY detected a potentially hallucinated"))

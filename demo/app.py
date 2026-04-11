@@ -624,6 +624,40 @@ def main() -> None:
                 st.markdown("**Follow-up query used in hop 2:**")
                 st.code(retrieval_details["follow_up_query"])
 
+            # ── Agent Loop section ────────────────────────────────────────
+            # The demo runs its own retrieval orchestration (not pipeline.run()),
+            # so agent loop state is not available here. Show N/A gracefully.
+            st.divider()
+            st.markdown("**Agent Loop**")
+            _agent_iters = retrieval_details.get("agent_iterations", None)
+            _agent_log = retrieval_details.get("agent_log", [])
+            _query_reformulated = retrieval_details.get("query_reformulated", False)
+            _final_query = retrieval_details.get("final_query_used", query.strip())
+
+            st.metric("Iterations", _agent_iters if _agent_iters is not None else "N/A")
+
+            if _query_reformulated:
+                st.info(f"Query reformulated: '{_final_query}'")
+                st.caption(
+                    "The agent reformulated the query after a failed retrieval "
+                    "or verification attempt to improve grounding quality."
+                )
+
+            if _agent_log:
+                with st.expander("Agent decision log"):
+                    for entry in _agent_log:
+                        st.markdown(
+                            f"**Iteration {entry.get('iteration')}** — "
+                            f"`{entry.get('action')}` "
+                            f"(reason: *{entry.get('reason')}*)"
+                        )
+                        st.write(
+                            f"Original: {entry.get('original_query', '')}"
+                        )
+                        st.write(
+                            f"Reformulated: {entry.get('reformulated_query', '')}"
+                        )
+
         with tab4:
             if verification:
                 for c in verification.get("verified_claims", []):

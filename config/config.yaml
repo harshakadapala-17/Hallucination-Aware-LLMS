@@ -39,6 +39,7 @@ rag:
     high: 5                       # complexity > 0.7
 
   min_retrieval_confidence: 0.3   # fall back to direct_llm when below this
+  max_agent_iterations: 2         # max retrieval-generation cycles in agent loop
 
 predictor:
   model_type: "logistic_regression"   # or "xgboost"
